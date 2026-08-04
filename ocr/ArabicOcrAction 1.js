@@ -2399,9 +2399,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // ArabicOCR — نسخة "تصدير متوازٍ" (parallel-export)
 // كل الصفحات بتتصدّر في نفس الوقت → وقت التصدير = وقت صفحة واحدة.
+// حدّث رابط السكربت إلى ?v=20260804e لكسر كاش المتصفح.
 // الـ OCR بيشتغل صفحة ورا صفحة (Ollama مش بيقبل تعدد حقيقي).
 // ═══════════════════════════════════════════════════════════════════
-window.ARABIC_OCR_VERSION = "2026-08-04-parallelexport";
+window.ARABIC_OCR_VERSION = "2026-08-04e-pagewise-export";
 
 window.runArabicOcrAction = function () {
     console.log("%cArabicOCR " + window.ARABIC_OCR_VERSION, "color:#2b6cb0;font-weight:bold");
@@ -2549,6 +2550,11 @@ window.runArabicOcrAction = function () {
 
     // ---------- Export helpers ----------
     function startExport(pageNum) {
+        // معامل p في Laserfiche هو pageNumber ويبدأ من 1؛ إرسال 0 يسبب
+        // "Specified argument was out of range" قبل بدء التصدير.
+        if (typeof pageNum !== "number" || pageNum % 1 !== 0 || pageNum < 1) {
+            return Promise.reject(new Error("رقم صفحة التصدير غير صالح: " + pageNum));
+        }
         var url = "/laserfiche/Dialogs/Export/ExportDisplay.aspx"
             + "?r=" + encodeURIComponent(repoName)
             + "&t=1&i=" + entryId + "&v=0&p=" + pageNum
