@@ -2399,9 +2399,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // ArabicOCR — نسخة "تصدير متوازٍ" (parallel-export)
 // كل الصفحات بتتصدّر في نفس الوقت → وقت التصدير = وقت صفحة واحدة.
+// حدّث رابط السكربت إلى ?v=20260804e لكسر كاش المتصفح.
 // الـ OCR بيشتغل صفحة ورا صفحة (Ollama مش بيقبل تعدد حقيقي).
 // ═══════════════════════════════════════════════════════════════════
-window.ARABIC_OCR_VERSION = "2026-08-04-parallelexport";
+window.ARABIC_OCR_VERSION = "2026-08-04e-pagewise-export";
 
 window.runArabicOcrAction = function () {
     console.log("%cArabicOCR " + window.ARABIC_OCR_VERSION, "color:#2b6cb0;font-weight:bold");
@@ -2549,6 +2550,11 @@ window.runArabicOcrAction = function () {
 
     // ---------- Export helpers ----------
     function startExport(pageNum) {
+        // معامل p في Laserfiche هو pageNumber ويبدأ من 1؛ إرسال 0 يسبب
+        // "Specified argument was out of range" قبل بدء التصدير.
+        if (typeof pageNum !== "number" || pageNum % 1 !== 0 || pageNum < 1) {
+            return Promise.reject(new Error("رقم صفحة التصدير غير صالح: " + pageNum));
+        }
         var url = "/laserfiche/Dialogs/Export/ExportDisplay.aspx"
             + "?r=" + encodeURIComponent(repoName)
             + "&t=1&i=" + entryId + "&v=0&p=" + pageNum
@@ -2561,7 +2567,11 @@ window.runArabicOcrAction = function () {
             .then(function (html) {
                 var m = html.match(/exportToken&quot;:&quot;([a-f0-9-]+)&quot;/i)
                       || html.match(/"exportToken"\s*:\s*"([a-f0-9-]+)"/i);
-                if (!m) throw new Error("تعذر الحصول على exportToken");
+                if (!m) {
+                    var exportError = new Error("تعذر الحصول على exportToken");
+                    exportError.isPageOutOfRange = /pageNumber|out of range/i.test(html);
+                    throw exportError;
+                }
                 return m[1];
             });
     }
@@ -2575,12 +2585,14 @@ window.runArabicOcrAction = function () {
             }).then(function (res) {
                 var s = res.d;
                 if (!s) throw new Error("استجابة غير متوقعة أثناء التصدير");
-                if (s.State === 2 || s.Completion === 100) return token;
+                // Laserfiche قد يرجع Completion=100 حتى للـ job الفاشل؛ لذلك
+                // يجب فحص FailMsg قبل اعتبار التصدير مكتملًا.
                 if (s.FailMsg) {
                     var err = new Error("فشل التصدير: " + s.FailMsg);
-                    err.isPageOutOfRange = /pageNumber/i.test(s.FailMsg);
+                    err.isPageOutOfRange = /pageNumber|out of range/i.test(s.FailMsg);
                     throw err;
                 }
+                if (s.State === 2 || s.Completion === 100) return token;
                 return sleep(500).then(check);
             });
         }
@@ -2594,6 +2606,13 @@ window.runArabicOcrAction = function () {
             { credentials: "same-origin" }
         ).then(function (r) {
             if (!r.ok) throw new Error("فشل تحميل الملف (" + r.status + ")");
+            var contentType = (r.headers.get("Content-Type") || "").toLowerCase();
+            if (contentType.indexOf("text/html") !== -1 ||
+                contentType.indexOf("application/json") !== -1) {
+                return r.text().then(function (body) {
+                    throw new Error("Laserfiche لم يرجع ملفًا صالحًا: " + body.slice(0, 160));
+                });
+            }
             return r.blob();
         });
     }
@@ -2619,10 +2638,10 @@ window.runArabicOcrAction = function () {
         var promises = [];
         for (var p = 1; p <= knownCount; p++) {
             promises.push(exportOnePage(p).catch(function (err) {
-                // صفحة خارج النطاق أو فاضية نتجاهلها
+                // خارج النطاق فقط هو نهاية طبيعية؛ أي خطأ آخر لازم يظهر
+                // للمستخدم بدل الاستمرار بنتيجة ناقصة وكأن العملية نجحت.
                 if (err && err.isPageOutOfRange) return null;
-                console.warn("ArabicOCR: فشل تصدير صفحة -", err);
-                return null;
+                throw err;
             }));
         }
         return Promise.all(promises).then(function (blobs) {
@@ -2642,10 +2661,6 @@ window.runArabicOcrAction = function () {
                 return next(p + 1);
             }).catch(function (err) {
                 if (err && err.isPageOutOfRange) return blobs;
-                if (blobs.length) {
-                    console.warn("ArabicOCR: توقف عند صفحة " + p + " -", err);
-                    return blobs;
-                }
                 throw err;
             });
         }
@@ -2664,8 +2679,12 @@ window.runArabicOcrAction = function () {
                 return r.json();
             })
             .catch(function (err) {
-                if (err.message && err.message.indexOf("خدمة الـ OCR") === 0) throw err;
-                throw new Error("تعذر الاتصال بخدمة الـ OCR (تأكد إن السيرفر شغال: " + OCR_SERVICE_URL + ")");
+                if (err && err.message && err.message.indexOf("خدمة الـ OCR") === 0) throw err;
+                if (err instanceof SyntaxError) {
+                    throw new Error("خدمة الـ OCR رجعت استجابة غير صالحة بدل JSON");
+                }
+                throw new Error("تعذر الاتصال بخدمة الـ OCR (" +
+                    ((err && err.message) || OCR_SERVICE_URL) + ")");
             });
     }
 
